@@ -2,14 +2,18 @@ import type { EngineInterface } from 'claude-code'
 
 import type { CiState, PrStatus, PullRequest, Repo } from '../types'
 
-const PROJECTS = 'projects'
 // Asks for the commit's rollup state, not every check: `gh pr list --json statusCheckRollup` fetches them all, and takes
 // about a third longer across several repos.
 const QUERY =
   // biome-ignore lint/security/noSecrets: a GraphQL query, not a secret.
   'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:100,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url isDraft updatedAt author{login} reviewDecision mergeable commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
 const PR_URL_PREFIX = 'https://github.com/'
-const TOP_LEVEL = ['git', 'rev-parse', '--show-toplevel']
+// The `.git` (a folder, or a worktree's file) of the session's folder and of each folder up to three levels below it.
+// Each level deeper takes three to four times as long, for few more repos. `-L` follows symlinks, so a repo linked in
+// from elsewhere counts, and `-prune` keeps find out of each `.git`.
+const FIND_REPOS = ['find', '-L', '.', '-mindepth', '1', '-maxdepth', '4', '-name', '.git', '-prune', '-print']
+const ROOT_GIT = './.git'
+const GIT_SUFFIX = '/.git'
 const REMOTE = ['git', 'remote', 'get-url', 'origin']
 // The host is matched whole, so a look-alike or a path holding its name is no GitHub repo. `github.com-work` is the
 // usual ssh alias for a second account, and `ssh.github.com` the host behind port 443.
@@ -61,32 +65,24 @@ async function slugOf($: EngineInterface, dir: string): Promise<string | undefin
   return remote?.match(GITHUB_REMOTE)?.groups?.slug
 }
 
-// A folder that is no repo of its own answers with the session's repo, and is left out by that.
-async function projectSlug(
-  $: EngineInterface,
-  dir: string,
-  rootTopLevel: string | undefined,
-): Promise<string | undefined> {
-  const topLevel = await runText($, TOP_LEVEL, dir)
-  if (topLevel === undefined || topLevel === rootTopLevel) {
-    return undefined
+// find prints what it found even when a folder it could not read makes it fail.
+async function runOutput($: EngineInterface, argv: readonly string[], cwd: string): Promise<string> {
+  try {
+    const { stdout } = await $.process.run(argv, { cwd })
+    return stdout
+  } catch {
+    return ''
   }
-  return slugOf($, dir)
-}
-
-async function listFolder($: EngineInterface, root: string, folder: string): Promise<string[]> {
-  const listed = await runText($, ['ls', '-1', folder], root)
-  return (listed ?? '')
-    .split('\n')
-    .filter(name => name !== '')
-    .map(name => `${root}/${folder}/${name}`)
 }
 
 async function discoverSlugs($: EngineInterface): Promise<string[]> {
   const root = await $.session.root()
-  const rootTopLevel = await runText($, TOP_LEVEL, root)
-  const dirs = (await Promise.all([listFolder($, root, '.'), listFolder($, root, PROJECTS)])).flat()
-  const slugs = await Promise.all([slugOf($, root), ...dirs.map(dir => projectSlug($, dir, rootTopLevel))])
+  const found = await runOutput($, FIND_REPOS, root)
+  const dirs = found
+    .split('\n')
+    .filter(line => line !== ROOT_GIT && line.startsWith('./') && line.endsWith(GIT_SUFFIX))
+    .map(line => `${root}/${line.slice('./'.length, -GIT_SUFFIX.length)}`)
+  const slugs = await Promise.all([slugOf($, root), ...dirs.map(dir => slugOf($, dir))])
   return [...new Set(slugs.filter(isText))]
 }
 

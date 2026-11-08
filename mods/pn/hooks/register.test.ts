@@ -23,6 +23,10 @@ interface Folder {
 interface Setup {
   projects?: Record<string, Folder>
   children?: Record<string, Folder>
+  // By the path below the session's folder.
+  nested?: Record<string, Folder>
+  // find fails on a folder it cannot read, after printing the rest.
+  findFails?: boolean
   rootRemote?: string
   prs?: Record<string, RawPr[] | { error: string }>
   isPlaced?: boolean
@@ -72,9 +76,23 @@ const answer = (stdout: string, exitCode = 0, stderr = '') => ({
   value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
 })
 
+const foldersOf = (options: Setup): [string, Folder][] => [
+  ...Object.entries(options.children ?? {}),
+  ...Object.entries(options.projects ?? {}).map(([name, folder]): [string, Folder] => [`projects/${name}`, folder]),
+  ...Object.entries(options.nested ?? {}),
+]
+
 const folderAt = (cwd: string | undefined, options: Setup) =>
-  Object.entries(options.projects ?? {}).find(([name]) => cwd === `${ROOT}/projects/${name}`)?.[1] ??
-  Object.entries(options.children ?? {}).find(([name]) => cwd === `${ROOT}/./${name}`)?.[1]
+  foldersOf(options).find(([path]) => cwd === `${ROOT}/${path}`)?.[1]
+
+// Like find, it keeps to -maxdepth, and a folder inside the session's repo has no `.git` of its own.
+const answerFind = (argv: string[], options: Setup) => {
+  const maxDepth = Number(argv[argv.indexOf('-maxdepth') + 1])
+  const found = foldersOf(options)
+    .filter(([path, folder]) => folder.topLevel !== ROOT && path.split('/').length + 1 <= maxDepth)
+    .map(([path]) => `./${path}/.git`)
+  return answer(['./.git', ...found].join('\n'), options.findFails ? 1 : 0)
+}
 
 const answerRemote = (cwd: string | undefined, options: Setup) => {
   const remote = cwd === ROOT ? (options.rootRemote ?? 'git@github.com:me/home.git') : folderAt(cwd, options)?.remote
@@ -95,12 +113,8 @@ const answerGh = (argv: string[], options: Setup) => {
 }
 
 const answerFor = (argv: string[], cwd: string | undefined, options: Setup) => {
-  if (argv[0] === 'ls') {
-    const names = Object.keys((argv[2] === 'projects' ? options.projects : options.children) ?? {})
-    return answer(names.join('\n'), names.length > 0 ? 0 : 1)
-  }
-  if (argv.includes('--show-toplevel')) {
-    return answer(cwd === ROOT ? ROOT : (folderAt(cwd, options)?.topLevel ?? `/elsewhere/${cwd}`))
+  if (argv[0] === 'find') {
+    return answerFind(argv, options)
   }
   if (argv[1] === 'remote') {
     return answerRemote(cwd, options)
@@ -188,7 +202,7 @@ test('opening asks for a tall pane that takes the keys and closes on Esc', async
   expect(opens[0]).toMatchObject({ id: 'pr', focus: true, closeOnEscape: true, rows: 16 })
 })
 
-test('it looks at the session repo and the GitHub repos under it and under projects, through symlinks', async ($, on) => {
+test('it looks at the session repo and the GitHub repos up to three levels under it, through symlinks', async ($, on) => {
   const { argvs, clock } = setup(on, {
     children: { service: { remote: 'https://github.com/org/service.git' }, docs: {} },
     projects: {
@@ -197,10 +211,35 @@ test('it looks at the session repo and the GitHub repos under it and under proje
       notes: {},
       inner: { topLevel: ROOT, remote: 'git@github.com:me/o.git' },
     },
+    nested: {
+      'work/api': { remote: 'https://github.com/org/api.git' },
+      'work/old/app': { remote: 'https://github.com/org/app.git' },
+      'work/old/legacy/tool': { remote: 'https://github.com/org/tool.git' },
+    },
   })
   await open($)
   await clock.advance(0)
-  expect(asked(argvs)).toEqual(new Set(['me/home', 'org/service', 'me/cli', 'me/blog']))
+  expect(asked(argvs)).toEqual(new Set(['me/home', 'org/service', 'me/cli', 'me/blog', 'org/api', 'org/app']))
+  expect(argvs).toContainEqual([
+    'find',
+    '-L',
+    '.',
+    '-mindepth',
+    '1',
+    '-maxdepth',
+    '4',
+    '-name',
+    '.git',
+    '-prune',
+    '-print',
+  ])
+})
+
+test('a folder find cannot read loses none of the repos it found', async ($, on) => {
+  const { argvs, clock } = setup(on, { projects: { cli: CLI }, findFails: true })
+  await open($)
+  await clock.advance(0)
+  expect(asked(argvs)).toEqual(new Set(['me/home', 'me/cli']))
 })
 
 test('a folder that is no repo still looks at the repos under it', async ($, on) => {
