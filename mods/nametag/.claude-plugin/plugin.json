@@ -1,0 +1,13 @@
+{
+  "name": "nametag",
+  "version": "0.7.0",
+  "description": "Gives each new session a random prompt bar color and an automatic name, renames it from the conversation with /nametag, and leaves names written by hand alone.",
+  "userConfig": {
+    "naming_rules": {
+      "type": "string",
+      "title": "Naming rules",
+      "description": "How a session name is written: its language, length and style. Applies to automatic names and to /nametag. Leave empty for no rules beyond one line of plain text.",
+      "default": "Write the name in the language the person writes in. Judge that from their own words alone: pasted code, logs, file names, command output and replies addressed to them don't count, and neither does the language of these instructions. Make it a bare noun phrase of the subject and the work: at most 15 characters in Japanese, or 4 words in English. Drop particles, modifiers, and explanation. Keep proper nouns and technical terms as written, but cut long ones down to the part that identifies them."
+    }
+  }
+}

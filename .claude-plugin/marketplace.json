@@ -1,0 +1,16 @@
+{
+  "name": "agent-mods",
+  "owner": {
+    "name": "michisato"
+  },
+  "plugins": [
+    {
+      "name": "nametag",
+      "source": "./mods/nametag"
+    },
+    {
+      "name": "pn",
+      "source": "./mods/pn"
+    }
+  ]
+}
