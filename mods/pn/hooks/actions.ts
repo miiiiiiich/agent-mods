@@ -27,8 +27,9 @@ async function rememberRows($: EngineInterface, rows: number): Promise<void> {
   await $.store.set(`rows:${await $.session.root()}`, rows)
 }
 
+// Through gh, which already has to be there and knows how each OS opens a browser.
 async function openInBrowser($: EngineInterface, url: string): Promise<void> {
-  const { exitCode, stderr } = await $.process.run(['open', url])
+  const { exitCode, stderr } = await $.process.run(['gh', 'pr', 'view', url, '--web'])
   if (exitCode !== 0) {
     $.ui.toast(`pn: could not open the browser: ${stderr.trim()}`)
   }

@@ -387,7 +387,7 @@ test('Enter on the repo holding the ring opens the underlined row, and leaves th
   await clock.advance(0)
   await arrow($, 1)
   await ui.press({ key: 'repo:me/home' })
-  expect(argvs).toContainEqual(['open', 'https://github.com/me/x/pull/4'])
+  expect(argvs).toContainEqual(['gh', 'pr', 'view', 'https://github.com/me/x/pull/4', '--web'])
   expect(closes).toHaveLength(0)
   await ui.unmount()
 })
@@ -402,7 +402,7 @@ test('a click on another repo only chooses it', async ($, on) => {
   await clock.advance(0)
   await ui.press({ key: 'repo:me/blog' })
   expect(await ui.find({ type: 'Text', text: 'PR 2' })).toBeDefined()
-  expect(argvs.some(argv => argv[0] === 'open')).toBe(false)
+  expect(argvs.some(argv => argv.includes('--web'))).toBe(false)
   await ui.unmount()
 })
 
@@ -633,7 +633,7 @@ test('the desktop app draws every row as a button, with no filler and no copy ke
   expect(await ui.find({ type: 'Button', key: 'pr:20' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'copy' })).toBeUndefined()
   await ui.press({ key: 'pr:20' })
-  expect(argvs).toContainEqual(['open', 'https://github.com/me/x/pull/20'])
+  expect(argvs).toContainEqual(['gh', 'pr', 'view', 'https://github.com/me/x/pull/20', '--web'])
   await ui.unmount()
 })
 
