@@ -5,10 +5,15 @@
   "packageManager": "bun@1.3.6",
   "scripts": {
     "check": "biome check . && tsc -p mods/nametag && tsc -p mods/pn",
-    "fix": "biome check --write ."
+    "fix": "biome check --write .",
+    "test": "claude plugin validate mods/nametag && claude plugin test mods/nametag && claude plugin validate mods/pn && claude plugin test mods/pn"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-code": "2.1.319",
     "@biomejs/biome": "2.6.4",
     "typescript": "7.0.2"
-  }
+  },
+  "trustedDependencies": [
+    "@anthropic-ai/claude-code"
+  ]
 }
