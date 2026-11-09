@@ -521,6 +521,28 @@ test('/nametag during the first turn finds nothing yet, and the turn end names t
   expect(renames()).toEqual(['/rename 売上集計の修正'])
 })
 
+test('a name the person gives while /nametag asks stands', async ($, on) => {
+  const { renames, renameAs, releaseFork, flush } = engine($, on, { holdsForks: true })
+  const asked = nametag($)
+  await settle()
+  await renameAs({ kind: 'composer' }, '手書きの名前')
+  await releaseFork()
+  await asked
+  await flush()
+  expect(renames()).toEqual(['/rename 手書きの名前'])
+})
+
+test('/clear while /nametag asks drops the name from before it', async ($, on) => {
+  const { renames, releaseFork, flush } = engine($, on, { holdsForks: true })
+  const asked = nametag($)
+  await settle()
+  await $.classic.SessionStart({ source: 'clear' })
+  await releaseFork()
+  await asked
+  await flush()
+  expect(renames()).toEqual([])
+})
+
 test('/nametag while an unnamed turn runs leaves its end nothing to do', async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
   await fromPerson({ prompt: '売上集計を直して' })

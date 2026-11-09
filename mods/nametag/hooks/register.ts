@@ -164,7 +164,7 @@ interface Waiting {
 }
 
 interface Naming {
-  claim: Claim
+  explicit: () => Claim
   heard: (title: string | undefined) => void
   renamed: (name: string) => void
   cleared: () => void
@@ -173,7 +173,7 @@ interface Naming {
 
 // A person's prompt to an unnamed session marks it, and the end of a turn that answered names it. A failed name is
 // asked for again after the next turn, because the next prompt marks the still unnamed session again.
-// `waiting` is what this mod is about to name the session: `{}` while the turn's end asks, `{ name }` until its
+// `waiting` is what this mod is about to name the session: `{}` while the model is asked, `{ name }` until its
 // /rename is done, which runs only once the session is idle. Meanwhile prompts don't ask again. A name from the person
 // or another plugin while it asks drops this mod's, and so does /clear; one while its /rename waits is given back
 // after it.
@@ -199,14 +199,25 @@ const naming = (): Naming => {
     }
   }
 
-  const claim: Claim = name => {
-    if (name !== undefined) {
-      return decide(name)
+  // What comes back counts only if no other name arrived since: `renamed` and `cleared` take `waiting` away.
+  const begin = (keepsMark: boolean): Claim => {
+    const asking: Waiting = {}
+    isUnnamed = false
+    waiting = asking
+    return name => {
+      if (waiting !== asking) {
+        return
+      }
+      waiting = undefined
+      isUnnamed = name === undefined && (keepsMark || asking.wouldMark === true)
+      if (name !== undefined) {
+        return decide(name)
+      }
     }
   }
 
   return {
-    claim,
+    explicit: (): Claim => begin(isUnnamed),
     heard: (title: string | undefined): void => {
       const wouldMark = !title || title === staleName
       if (waiting) {
@@ -230,19 +241,8 @@ const naming = (): Naming => {
       }
     },
     ask: (): Claim | undefined => {
-      if (!isUnnamed) {
-        return
-      }
-      const asking: Waiting = {}
-      isUnnamed = false
-      waiting = asking
-      return name => {
-        if (waiting !== asking) {
-          return
-        }
-        waiting = undefined
-        isUnnamed = name === undefined && asking.wouldMark === true
-        return claim(name)
+      if (isUnnamed) {
+        return begin(false)
       }
     },
   }
@@ -259,7 +259,7 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  on('command.run', { command: COMMAND }, $ => renameNow($, prompt, state.claim))
+  on('command.run', { command: COMMAND }, $ => renameNow($, prompt, state.explicit()))
 
   // This mod's own /rename does not pass its own hooks.
   on('command.run', { command: 'rename' }, (_$, e, next) => {
