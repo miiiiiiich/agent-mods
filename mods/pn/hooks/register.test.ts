@@ -36,6 +36,7 @@ const ROOT = '/work/home'
 const FIRST_PAGE = /1-7 of 20/u
 const LEGEND = /running/u
 const NO_CHECKS = /^· {2}#1/u
+const FACTS_LINE = /^#1 · /u
 
 const rollup = (state: string): unknown => ({
   nodes: [{ commit: { statusCheckRollup: { state } } }],
@@ -634,6 +635,18 @@ test('the desktop app draws every row as a button, with no filler and no copy ke
   expect(await ui.find({ type: 'Button', key: 'copy' })).toBeUndefined()
   await ui.press({ key: 'pr:20' })
   expect(argvs).toContainEqual(['gh', 'pr', 'view', 'https://github.com/me/x/pull/20', '--web'])
+  await ui.unmount()
+})
+
+test('the desktop app draws a title over a line of facts, with no column names', async ($, on) => {
+  const { clock } = setup(on, { prs: { 'me/home': [{ ...pr(1, 'Fix the thing'), reviewDecision: 'APPROVED' }] } })
+  await open($)
+  const ui = await $.ui.mount({ ...paneAt(30, true, 40), surface: 'desktop' })
+  await clock.advance(0)
+  expect(await ui.find({ type: 'Text', text: 'Fix the thing' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: FACTS_LINE })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'approved' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'CI No. Title' })).toBeUndefined()
   await ui.unmount()
 })
 

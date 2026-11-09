@@ -14,7 +14,8 @@ import { atom, read, update } from 'claude-code'
 
 import type { Listing, PullRequest, Repo } from '../types'
 import { copyLink, currentRepo, openInBrowser, rememberedRows, rememberRows, reposOf } from './actions'
-import { drawList, drawWaiting, REPO_KEY, ROW_KEY, repoKey, TOP_KEY } from './draw'
+import { drawList, drawWaiting, TOP_KEY } from './draw'
+import { REPO_KEY, ROW_KEY, repoKey } from './draw-parts'
 import { loadRepos } from './github'
 import { emptyText, stepRow, wantedRows } from './layout'
 
