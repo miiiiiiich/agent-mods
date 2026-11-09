@@ -8,6 +8,9 @@ AGENTS.md
 CLAUDE.md
 CLAUDE.local.md
 
+# Work in progress beside each mod
+wip/
+
 # Types Claude Code generates beside each mod
 **/.claude-plugin/types/
 
