@@ -1,6 +1,6 @@
 {
   "name": "nametag",
-  "version": "0.7.0",
+  "version": "0.1.0",
   "description": "Gives each new session a random prompt bar color and an automatic name, renames it from the conversation with /nametag, and leaves names written by hand alone.",
   "userConfig": {
     "naming_rules": {
