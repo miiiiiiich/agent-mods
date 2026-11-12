@@ -48,6 +48,10 @@
           "nursery": { "noUnsafeTypeAssertion": "off", "useExplicitReturnType": "off" }
         }
       }
+    },
+    {
+      "includes": ["scripts/**"],
+      "linter": { "rules": { "correctness": { "noNodejsModules": "off" } } }
     }
   ]
 }
