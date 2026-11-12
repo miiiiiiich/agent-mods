@@ -29,4 +29,5 @@ export interface Repo {
   error?: string
 }
 
-export type Listing = { status: 'loading' } | { status: 'loaded'; repos: Repo[]; scanned: number }
+// `isCut`: the search below the session's folder was given up, so `scanned` may miss repos.
+export type Listing = { status: 'loading' } | { status: 'loaded'; repos: Repo[]; scanned: number; isCut: boolean }

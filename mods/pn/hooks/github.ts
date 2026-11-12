@@ -10,8 +10,33 @@ const QUERY =
 const PR_URL_PREFIX = 'https://github.com/'
 // The `.git` (a folder, or a worktree's file) of the session's folder and of each folder up to three levels below it.
 // Each level deeper takes three to four times as long, for few more repos. `-L` follows symlinks, so a repo linked in
-// from elsewhere counts, and `-prune` keeps find out of each `.git`.
-const FIND_REPOS = ['find', '-L', '.', '-mindepth', '1', '-maxdepth', '4', '-name', '.git', '-prune', '-print']
+// from elsewhere counts. find stays out of each `.git`, of hidden folders and of `node_modules`: tools keep caches and
+// checkouts there, and from a home folder they made the search take seconds instead of a tenth of one.
+const FIND_REPOS = [
+  'find',
+  '-L',
+  '.',
+  '-mindepth',
+  '1',
+  '-maxdepth',
+  '4',
+  '(',
+  '-name',
+  '.git',
+  '-print',
+  '-o',
+  '-name',
+  '.?*',
+  '-o',
+  '-name',
+  'node_modules',
+  ')',
+  '-prune',
+]
+// A search still running then is given up, and the pane says so instead of that nothing is open.
+const FIND_TIMEOUT_MS = 15_000
+// At most this many git or gh at once: a home folder can hold a hundred repos or more.
+const MAX_RUNNING = 8
 const ROOT_GIT = './.git'
 const GIT_SUFFIX = '/.git'
 const REMOTE = ['git', 'remote', 'get-url', 'origin']
@@ -65,25 +90,39 @@ async function slugOf($: EngineInterface, dir: string): Promise<string | undefin
   return remote?.match(GITHUB_REMOTE)?.groups?.slug
 }
 
-// find prints what it found even when a folder it could not read makes it fail.
-async function runOutput($: EngineInterface, argv: readonly string[], cwd: string): Promise<string> {
+// Runs `run` on every item, at most MAX_RUNNING at a time, and keeps the results in the items' order.
+const mapLimited = async <T, R>(items: readonly T[], run: (item: T) => Promise<R>): Promise<R[]> => {
+  const entries = items.entries()
+  const results: R[] = []
+  const work = async (): Promise<void> => {
+    for (const [index, item] of entries) {
+      // biome-ignore lint/performance/noAwaitInLoops: each worker takes one item at a time; the workers run side by side.
+      results[index] = await run(item)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MAX_RUNNING, items.length) }, work))
+  return results
+}
+
+// find prints what it found even when a folder it could not read makes it fail. Undefined when it did not finish.
+async function findRepos($: EngineInterface, cwd: string): Promise<string | undefined> {
   try {
-    const { stdout } = await $.process.run(argv, { cwd })
+    const { stdout } = await $.process.run(FIND_REPOS, { cwd, timeoutMs: FIND_TIMEOUT_MS })
     return stdout
   } catch {
-    return ''
+    return undefined
   }
 }
 
-async function discoverSlugs($: EngineInterface): Promise<string[]> {
+async function discoverSlugs($: EngineInterface): Promise<{ slugs: string[]; isCut: boolean }> {
   const root = await $.session.root()
-  const found = await runOutput($, FIND_REPOS, root)
-  const dirs = found
+  const found = await findRepos($, root)
+  const dirs = (found ?? '')
     .split('\n')
     .filter(line => line !== ROOT_GIT && line.startsWith('./') && line.endsWith(GIT_SUFFIX))
     .map(line => `${root}/${line.slice('./'.length, -GIT_SUFFIX.length)}`)
-  const slugs = await Promise.all([slugOf($, root), ...dirs.map(dir => slugOf($, dir))])
-  return [...new Set(slugs.filter(isText))]
+  const slugs = await mapLimited([root, ...dirs], dir => slugOf($, dir))
+  return { slugs: [...new Set(slugs.filter(isText))], isCut: found === undefined }
 }
 
 const timeOf = (value: unknown): number | undefined => {
@@ -208,12 +247,13 @@ async function fetchRepo($: EngineInterface, slug: string): Promise<Repo> {
 
 // A repo with nothing open has nothing to show, so only the rest get a place in the pane. The count says what was
 // looked at, so a folder with no repos isn't mistaken for repos with nothing open.
-async function loadRepos($: EngineInterface): Promise<{ repos: Repo[]; scanned: number }> {
-  const slugs = await discoverSlugs($)
-  const repos = await Promise.all(slugs.map(slug => fetchRepo($, slug)))
+async function loadRepos($: EngineInterface): Promise<{ repos: Repo[]; scanned: number; isCut: boolean }> {
+  const { slugs, isCut } = await discoverSlugs($)
+  const repos = await mapLimited(slugs, slug => fetchRepo($, slug))
   return {
     repos: repos.filter(repo => repo.prs.length > 0 || repo.error !== undefined),
     scanned: slugs.length,
+    isCut,
   }
 }
 

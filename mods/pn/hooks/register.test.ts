@@ -27,6 +27,8 @@ interface Setup {
   nested?: Record<string, Folder>
   // find fails on a folder it cannot read, after printing the rest.
   findFails?: boolean
+  // find is still running when its time is up, and the call rejects.
+  findTimesOut?: boolean
   rootRemote?: string
   prs?: Record<string, RawPr[] | { error: string }>
   isPlaced?: boolean
@@ -114,6 +116,9 @@ const answerGh = (argv: string[], options: Setup) => {
 }
 
 const answerFor = (argv: string[], cwd: string | undefined, options: Setup) => {
+  if (argv[0] === 'find' && options.findTimesOut === true) {
+    throw new Error('the command was still running after 15000 ms')
+  }
   if (argv[0] === 'find') {
     return answerFind(argv, options)
   }
@@ -134,6 +139,8 @@ const setup = (on: On, options: Setup = {}) => {
   const toasts: string[] = []
   const clock = mock.clock(on)
   const stored = new Map<string, unknown>()
+  const running = { now: 0, most: 0 }
+  const findTimeouts: (number | undefined)[] = []
   on('session.root', () => ({ value: ROOT }) as never)
   on('store.get', (_, e) => ({ value: stored.get(e.key) }) as never)
   on('store.set', (_, e) => {
@@ -162,12 +169,22 @@ const setup = (on: On, options: Setup = {}) => {
     toasts.push(String((e as { text?: string }).text))
     return { value: undefined } as never
   })
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     const argv = [...e.argv]
     argvs.push(argv)
-    return answerFor(argv, e.init?.cwd, options)
+    if (argv[0] === 'find') {
+      findTimeouts.push(e.init?.timeoutMs)
+    }
+    running.now += 1
+    running.most = Math.max(running.most, running.now)
+    try {
+      await Promise.resolve()
+      return answerFor(argv, e.init?.cwd, options)
+    } finally {
+      running.now -= 1
+    }
   })
-  return { argvs, opens, closes, copies, toasts, clock }
+  return { argvs, opens, closes, copies, toasts, clock, running, findTimeouts }
 }
 
 const BLOG = { remote: 'https://github.com/me/blog.git' }
@@ -229,11 +246,46 @@ test('it looks at the session repo and the GitHub repos up to three levels under
     '1',
     '-maxdepth',
     '4',
+    '(',
     '-name',
     '.git',
-    '-prune',
     '-print',
+    '-o',
+    '-name',
+    '.?*',
+    '-o',
+    '-name',
+    'node_modules',
+    ')',
+    '-prune',
   ])
+})
+
+test('a search that runs out of time says so, and still looks at the session repo', async ($, on) => {
+  const { argvs, clock, findTimeouts } = setup(on, { findTimesOut: true })
+  await open($)
+  const ui = await $.ui.mount({ ...paneAt(), surface: 'terminal' })
+  await clock.advance(0)
+  expect(findTimeouts).toEqual([15_000])
+  expect(asked(argvs)).toEqual(new Set(['me/home']))
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Searching below this folder took too long. Open the pane in a smaller folder.',
+    }),
+  ).toBeDefined()
+  await ui.unmount()
+})
+
+test('no more than eight git or gh run at once', async ($, on) => {
+  const children = Object.fromEntries(
+    Array.from({ length: 20 }, (_, index) => [`repo${index}`, { remote: `https://github.com/me/repo${index}.git` }]),
+  )
+  const { argvs, clock, running } = setup(on, { children })
+  await open($)
+  await clock.advance(0)
+  expect(asked(argvs).size).toBe(21)
+  expect(running.most).toBe(8)
 })
 
 test('a folder find cannot read loses none of the repos it found', async ($, on) => {

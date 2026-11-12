@@ -26,6 +26,9 @@ const emptyText = (current: Listing): string => {
   if (current.status === 'loading') {
     return 'Loading…'
   }
+  if (current.isCut) {
+    return 'Searching below this folder took too long. Open the pane in a smaller folder.'
+  }
   if (current.scanned > 0) {
     return `No open pull requests in ${current.scanned} repos.`
   }

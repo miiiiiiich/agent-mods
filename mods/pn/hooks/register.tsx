@@ -25,7 +25,7 @@ const OPEN_ARGS = { id: PANE, title: 'Pull Requests', focus: true, closeOnEscape
 // `sdk` is how the desktop app's sessions receive what the person typed.
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk']
 
-const listing = atom({ plugin: 'pn', key: 'listing' } as const, { status: 'loading' }, { shape: 'listing-4' })
+const listing = atom({ plugin: 'pn', key: 'listing' } as const, { status: 'loading' }, { shape: 'listing-5' })
 const selected = atom({ plugin: 'pn', key: 'selected' } as const, '')
 const focused = atom({ plugin: 'pn', key: 'focused' } as const, 0)
 
@@ -96,7 +96,7 @@ const selectRepo = async ($: EngineInterface, repo: Repo): Promise<void> => {
 
 const load = async ($: EngineInterface, startedIn: number): Promise<void> => {
   await pinWindow($)
-  const { repos, scanned } = await loadRepos($)
+  const { repos, scanned, isCut } = await loadRepos($)
   if (startedIn !== generation) {
     return
   }
@@ -105,7 +105,7 @@ const load = async ($: EngineInterface, startedIn: number): Promise<void> => {
   if (first !== undefined) {
     await update($, selected, () => first.slug)
   }
-  await update($, listing, (): Listing => ({ status: 'loaded', repos, scanned }))
+  await update($, listing, (): Listing => ({ status: 'loaded', repos, scanned, isCut }))
   // An open pane keeps the height it opened at, so the height this list needs is for the next open.
   await rememberRows($, wantedRows(repos, lastColumns))
   if (first !== undefined && startedIn === generation) {

@@ -61,7 +61,7 @@ claude plugin install pn --marketplace miiiiiiich/agent-mods
 
 ## 仕組み
 
-- `find` で、起動したフォルダから 3 階層下までの `.git` を探します（symlink もたどります）
+- `find` で、起動したフォルダから 3 階層下までの `.git` を探します（symlink もたどります）。隠しフォルダと `node_modules` の中は探しません。15 秒で終わらないときは、探すのをやめてそう表示します
 - `git` でリモートを調べ、GitHub のリポだけを見ます
 - `gh api graphql` で PR を取得します。ペインを開くたびに 1 回取得し、開いている間は更新しません
 - `gh pr view --web` でブラウザを開きます。開くのは `https://github.com/` の URL だけです
