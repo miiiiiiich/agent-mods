@@ -2,5 +2,10 @@
   "name": "pn",
   "version": "0.1.0",
   "description": "Keyboard-driven panes. /pn:pr lists the open pull requests of the repos in and directly under the session's folder.",
+  "author": {
+    "name": "michisato",
+    "url": "https://github.com/miiiiiiich"
+  },
+  "license": "MIT",
   "types": "./types/index.d.ts"
 }

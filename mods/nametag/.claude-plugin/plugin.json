@@ -2,6 +2,11 @@
   "name": "nametag",
   "version": "0.1.0",
   "description": "Gives each new session a random prompt bar color and an automatic name, renames it from the conversation with /nametag, and leaves names written by hand alone.",
+  "author": {
+    "name": "michisato",
+    "url": "https://github.com/miiiiiiich"
+  },
+  "license": "MIT",
   "userConfig": {
     "naming_rules": {
       "type": "string",
