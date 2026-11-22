@@ -167,7 +167,7 @@ interface Naming {
   explicit: () => Claim
   heard: (title: string | undefined) => void
   renamed: (name: string) => void
-  cleared: () => void
+  cleared: (title: string | undefined) => void
   ask: () => Claim | undefined
 }
 
@@ -177,17 +177,15 @@ interface Naming {
 // /rename is done, which runs only once the session is idle. Meanwhile prompts don't ask again. A name from the person
 // or another plugin while it asks drops this mod's, and so does /clear; one while its /rename waits is given back
 // after it.
-// /clear keeps the title. An automatic one is replaced after the next turn, and a hand-written one stays: `staleName`.
+// /clear keeps the old title, and no hook can empty it. So that title counts as no name, hand-written or not, until a
+// name replaces it: `staleName`. It is the title as /clear left it, which needs no memory a reloaded mod may have lost.
 const naming = (): Naming => {
   let isUnnamed = false
   let waiting: Waiting | undefined
-  let autoName: string | undefined
   let staleName: string | undefined
 
-  // A name counts as automatic once this mod decides it, so /clear replaces it like any other this mod gave.
   const decide = (name: string): Landed => {
     const mine: Waiting = { name }
-    autoName = name
     staleName = undefined
     isUnnamed = false
     waiting = mine
@@ -228,14 +226,17 @@ const naming = (): Naming => {
     },
     renamed: (name: string): void => {
       isUnnamed = false
+      staleName = undefined
       if (waiting?.name === undefined) {
         waiting = undefined
       } else {
         waiting.byHand = name
       }
     },
-    cleared: (): void => {
-      staleName = autoName
+    // A /rename of this mod yet to land leaves its name, or the hand-written one it gives back.
+    cleared: (title: string | undefined): void => {
+      staleName = waiting?.byHand ?? waiting?.name ?? title
+      isUnnamed = false
       if (waiting?.name === undefined) {
         waiting = undefined
       }
@@ -270,7 +271,7 @@ export const register: Register = (on, options) => {
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
     if (e.source === 'clear') {
-      state.cleared()
+      state.cleared(e.session_title)
       rollColor($)
     }
     return result
