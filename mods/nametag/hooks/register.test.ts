@@ -460,7 +460,7 @@ test('after /clear an automatic name is replaced once', async ($, on) => {
 
   await fromPerson({ prompt: '売上集計を直して' })
   await turnEnds()
-  await $.classic.SessionStart({ source: 'clear' })
+  await $.classic.SessionStart({ source: 'clear', session_title: '売上集計の修正' })
 
   await fromPerson({ prompt: '別の話', session_title: '売上集計の修正' })
   await turnEnds()
@@ -472,16 +472,116 @@ test('after /clear an automatic name is replaced once', async ($, on) => {
   expect(forks).toHaveLength(2)
 })
 
-test('after /clear a name written by hand stays', async ($, on) => {
+test('after /clear a title this mod did not give, by hand or from before a reload, is replaced', async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
 
-  await fromPerson({ prompt: '売上集計を直して' })
-  await turnEnds()
-  await $.classic.SessionStart({ source: 'clear' })
-
+  await $.classic.SessionStart({ source: 'clear', session_title: '手で付けた名前' })
   await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
   await turnEnds()
   expect(forks).toHaveLength(1)
+})
+
+test('after /clear a greeting with nothing to name leaves the old title to the next prompt', async ($, on) => {
+  const { forks, renames, fromPerson, turnEnds } = engine($, on, {
+    fork: [
+      { isAnswered: true, text: 'SKIP' },
+      { isAnswered: true, text: '別の話の名前' },
+    ],
+  })
+
+  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
+  await fromPerson({ prompt: 'こんにちは', session_title: '前の名前' })
+  await turnEnds()
+  expect(renames()).toEqual([])
+
+  await fromPerson({ prompt: '別の話をしたい', session_title: '前の名前' })
+  await turnEnds()
+  expect(forks).toHaveLength(2)
+  expect(renames()).toEqual(['/rename 別の話の名前'])
+})
+
+test('a name written by hand after /clear stays', async ($, on) => {
+  const { forks, renameAs, fromPerson, turnEnds } = engine($, on)
+
+  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
+  await renameAs({ kind: 'composer' }, '手で付けた名前')
+  await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
+  await turnEnds()
+  expect(forks).toEqual([])
+})
+
+test("this mod's name that lands after /clear is replaced after the next turn", async ($, on) => {
+  const { forks, renames, fromPerson, endTurn, step, flush, turnEnds } = engine($, on)
+
+  await fromPerson({ prompt: '売上集計を直して' })
+  await endTurn()
+  await step()
+  await $.classic.SessionStart({ source: 'clear' })
+  await flush()
+  expect(renames()).toEqual(['/rename 売上集計の修正'])
+
+  await fromPerson({ prompt: '別の話', session_title: '売上集計の修正' })
+  await turnEnds()
+  expect(forks).toHaveLength(2)
+  expect(renames()).toHaveLength(2)
+})
+
+test("this mod's name that lands after the first prompt past /clear is replaced a turn later", async ($, on) => {
+  const { renames, fromPerson, endTurn, step, flush, turnEnds } = engine($, on, {
+    fork: [
+      { isAnswered: true, text: '先の名前' },
+      { isAnswered: true, text: '後の名前' },
+    ],
+  })
+
+  await fromPerson({ prompt: '売上集計を直して' })
+  await endTurn()
+  await step()
+  await $.classic.SessionStart({ source: 'clear' })
+  await fromPerson({ prompt: '別の話' })
+  await flush()
+  await turnEnds()
+  expect(renames()).toEqual(['/rename 先の名前'])
+
+  await fromPerson({ prompt: '別の話の続き', session_title: '先の名前' })
+  await turnEnds()
+  expect(renames()).toEqual(['/rename 先の名前', '/rename 後の名前'])
+})
+
+test('a name given by hand after /clear stays, even the old one', async ($, on) => {
+  const { forks, renameAs, fromPerson, turnEnds } = engine($, on)
+
+  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
+  await renameAs({ kind: 'composer' }, '前の名前')
+  await fromPerson({ prompt: '別の話', session_title: '前の名前' })
+  await turnEnds()
+  expect(forks).toEqual([])
+})
+
+test('a hand-written name this mod gives back after /clear is replaced', async ($, on) => {
+  const { forks, renames, renameAs, fromPerson, endTurn, step, flush, turnEnds } = engine($, on)
+
+  await fromPerson({ prompt: '売上集計を直して' })
+  await endTurn()
+  await step()
+  await renameAs({ kind: 'composer' }, '手で付けた名前')
+  await $.classic.SessionStart({ source: 'clear' })
+  await flush()
+  expect(renames().at(-1)).toBe('/rename 手で付けた名前')
+
+  await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
+  await turnEnds()
+  expect(forks).toHaveLength(2)
+})
+
+test('/clear drops the mark a prompt left before it', async ($, on) => {
+  const { forks, fromPerson, endTurn, turnEnds } = engine($, on)
+
+  await fromPerson({ prompt: '売上集計を直して' })
+  await endTurn({ reason: 'aborted' })
+  await $.classic.SessionStart({ source: 'clear' })
+  await turnEnds()
+  expect(forks).toEqual([])
 })
 
 const nametag = ($: TestEngine) =>
@@ -580,16 +680,6 @@ for (const [label, fork, said] of [
     expect(renames()).toEqual([])
   })
 }
-
-test('a name from /nametag counts as automatic, so /clear replaces it', async ($, on) => {
-  const { forks, fromPerson, turnEnds, flush } = engine($, on)
-  await nametag($)
-  await flush()
-  await $.classic.SessionStart({ source: 'clear' })
-  await fromPerson({ prompt: 'a new subject', session_title: '売上集計の修正' })
-  await turnEnds()
-  expect(forks).toHaveLength(2)
-})
 
 test('the prompt carries no examples, judges the language from the person, and names what a link held', async ($, on) => {
   const { forks } = engine($, on)
