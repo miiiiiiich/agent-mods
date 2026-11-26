@@ -6,17 +6,14 @@ type ForkReply = { isAnswered: true; text: string } | { isAnswered: false; reaso
 
 interface EngineSetup {
   turns?: number
-  block?: string
-  dropsPrompts?: boolean
+  // Why the engine drops every prompt, as a settings hook's block does.
+  drop?: string
   // One reply for every fork, or one per fork in turn, the last one repeated.
   fork?: ForkReply | ForkReply[]
   // Each fork waits for releaseFork().
   holdsForks?: boolean
-}
-
-interface Sent {
-  prompt: string
-  session_title?: string
+  // How many /rename runs fail first.
+  failsRenames?: number
 }
 
 interface TurnEnd {
@@ -35,7 +32,8 @@ const NO_USAGE = {
 }
 
 const engine = ($: TestEngine, on: On, setup: EngineSetup = {}) => {
-  const { turns = 0, block, dropsPrompts = false } = setup
+  const { turns = 0, drop } = setup
+  let renamesToFail = setup.failsRenames ?? 0
   const replies = [setup.fork ?? { isAnswered: true, text: '売上集計の修正' }].flat()
   // Each timer of the mod waits here until step() lets the oldest one run, as an engine queue would.
   const timers: (() => void)[] = []
@@ -44,7 +42,6 @@ const engine = ($: TestEngine, on: On, setup: EngineSetup = {}) => {
   const models: unknown[] = []
   const registered: unknown[] = []
   const forks: string[] = []
-  let sent: Sent | undefined
 
   on('command.register', (_$, e) => {
     registered.push(e)
@@ -66,28 +63,22 @@ const engine = ($: TestEngine, on: On, setup: EngineSetup = {}) => {
     models.push(e)
     return { value: { isAnswered: false, reason: 'empty-reply', usage: NO_USAGE } } as never
   })
-  on('classic.UserPromptSubmit', () => (block ? { block } : {}))
-  on('classic.SessionStart', () => ({}))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('session.turns', () => ({ value: turns }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  // The engine raises the classic hook inside prompt.submit.
-  on('prompt.submit', async (_$, e) => {
-    if (!dropsPrompts) {
-      await $.classic.UserPromptSubmit(sent ?? { prompt: e.text })
-    }
-    return { text: e.text }
-  })
+  on('prompt.submit', (_$, e) => (drop ? { drop } : { text: e.text }))
   on('command.run', (_$, e) => {
     runs.push(`/${e.command} ${e.args}`.trim())
+    // A hook that throws is skipped, and with none beneath it the run rejects.
+    if (e.command === 'rename' && renamesToFail > 0) {
+      renamesToFail -= 1
+      throw new Error('rename failed')
+    }
     return { text: '' }
   })
 
-  const fromPerson = async (fields: Sent) => {
-    sent = fields
-    await $.prompt.submit({ text: fields.prompt, origin: { kind: 'composer' } } as never)
-    sent = undefined
-  }
+  const fromPerson = (text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
 
   const endTurn = ({ reason = 'answer', agentId }: TurnEnd = {}) =>
     $.turn.complete({
@@ -128,6 +119,18 @@ const engine = ($: TestEngine, on: On, setup: EngineSetup = {}) => {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
 
+const nametag = ($: TestEngine) =>
+  $.command.run({
+    command: 'nametag',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 140 },
+  })
+
+const start = ($: TestEngine) => $.session.start(START)
+const endSession = ($: TestEngine, reason: 'clear' | 'resume') =>
+  $.session.end({ reason, sessionId: 'session', resume: { id: 'session' } } as never)
+
 test('a new interactive session runs bare /color', async ($, on) => {
   const { runs } = engine($, on)
 
@@ -155,28 +158,30 @@ test('a headless session is not colored', async ($, on) => {
   expect(runs).toEqual([])
 })
 
-test('/clear rolls the color again', async ($, on) => {
-  const { runs } = engine($, on, { turns: 3 })
+test('/clear rolls the color again, from a timer', async ($, on) => {
+  const { runs, flush } = engine($, on, { turns: 3 })
 
-  await $.classic.SessionStart({ source: 'clear' })
-  await settle()
+  await endSession($, 'clear')
+  expect(runs).toEqual([])
 
+  await flush()
   expect(runs).toEqual(['/color'])
 })
 
 test('/resume leaves the color alone', async ($, on) => {
-  const { runs } = engine($, on, { turns: 3 })
+  const { runs, flush } = engine($, on, { turns: 3 })
 
-  await $.classic.SessionStart({ source: 'resume' })
-  await settle()
+  await endSession($, 'resume')
+  await flush()
 
   expect(runs).toEqual([])
 })
 
 test('sending a prompt names nothing yet', async ($, on) => {
   const { forks, models, renames, fromPerson, flush } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: 'https://www.notion.so/page' })
+  await fromPerson('https://www.notion.so/page')
   await flush()
 
   expect(forks).toEqual([])
@@ -186,8 +191,9 @@ test('sending a prompt names nothing yet', async ($, on) => {
 
 test('the end of the first answered turn names the session from the conversation', async ($, on) => {
   const { forks, models, renames, fromPerson, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: 'https://www.notion.so/page' })
+  await fromPerson('https://www.notion.so/page')
   await turnEnds()
 
   expect(forks).toHaveLength(1)
@@ -197,8 +203,9 @@ test('the end of the first answered turn names the session from the conversation
 
 test('the name goes to /rename from a timer, after the turn has ended', async ($, on) => {
   const { forks, renames, fromPerson, flush, endTurn } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   expect(forks).toEqual([])
 
@@ -208,29 +215,43 @@ test('the name goes to /rename from a timer, after the turn has ended', async ($
 
 test('a session is named once, not at every turn', async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds()
-  await fromPerson({ prompt: '続けて', session_title: '売上集計の修正' })
+  await fromPerson('続けて')
   await turnEnds()
 
   expect(forks).toHaveLength(1)
 })
 
-test('a session that has a name is never renamed', async ($, on) => {
-  const { forks, renames, fromPerson, turnEnds } = engine($, on)
+test('a resumed session, or one this mod is reloaded into past its first prompt, is never named', async ($, on) => {
+  const { forks, renames, fromPerson, turnEnds } = engine($, on, { turns: 3 })
 
-  await fromPerson({ prompt: '別の話', session_title: '今の名前' })
+  await start($)
+  await fromPerson('別の話')
   await turnEnds()
 
   expect(forks).toEqual([])
   expect(renames()).toEqual([])
 })
 
+test('a session resumed in place of a fresh one is never named', async ($, on) => {
+  const { forks, fromPerson, turnEnds } = engine($, on)
+
+  await start($)
+  await endSession($, 'resume')
+  await fromPerson('別の話')
+  await turnEnds()
+
+  expect(forks).toEqual([])
+})
+
 test('an interrupted turn leaves the naming to the next answered one', async ($, on) => {
   const { forks, renames, fromPerson, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds({ reason: 'aborted' })
   await turnEnds({ reason: 'error' })
   expect(forks).toEqual([])
@@ -241,8 +262,9 @@ test('an interrupted turn leaves the naming to the next answered one', async ($,
 
 test("a subagent's turn does not name the session", async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds({ agentId: 'agent-1' })
   expect(forks).toEqual([])
 
@@ -256,8 +278,9 @@ for (const [label, origin] of [
 ] as const) {
   test(`a name ${label} gives during the turn stands`, async ($, on) => {
     const { forks, fromPerson, turnEnds, renameAs } = engine($, on)
+    await start($)
 
-    await fromPerson({ prompt: '売上集計を直して' })
+    await fromPerson('売上集計を直して')
     await renameAs(origin, '別の名前')
     await turnEnds()
 
@@ -266,8 +289,9 @@ for (const [label, origin] of [
 
   test(`a name ${label} gives while this mod's /rename waits is given back after it`, async ($, on) => {
     const { renames, fromPerson, step, flush, renameAs, endTurn } = engine($, on)
+    await start($)
 
-    await fromPerson({ prompt: '売上集計を直して' })
+    await fromPerson('売上集計を直して')
     await endTurn()
     await step()
     await renameAs(origin, '別の名前')
@@ -283,8 +307,9 @@ for (const [label, origin] of [
 ] as const) {
   test(`a name ${label} gives while the turn's end asks stands`, async ($, on) => {
     const { renames, fromPerson, endTurn, step, flush, releaseFork, renameAs } = engine($, on, { holdsForks: true })
+    await start($)
 
-    await fromPerson({ prompt: '売上集計を直して' })
+    await fromPerson('売上集計を直して')
     await endTurn()
     await step()
     await renameAs(origin, '別の名前')
@@ -297,11 +322,12 @@ for (const [label, origin] of [
 
 test("a prompt sent while the turn's end asks does not ask again", async ($, on) => {
   const { forks, fromPerson, endTurn, turnEnds, step, flush, releaseFork } = engine($, on, { holdsForks: true })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
-  await fromPerson({ prompt: '続けて' })
+  await fromPerson('続けて')
   await turnEnds()
   await releaseFork()
   await flush()
@@ -311,16 +337,17 @@ test("a prompt sent while the turn's end asks does not ask again", async ($, on)
 
 test("/clear while the turn's end asks drops the name from before it", async ($, on) => {
   const { forks, renames, fromPerson, endTurn, step, flush, releaseFork } = engine($, on, { holdsForks: true })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
-  await $.classic.SessionStart({ source: 'clear' })
+  await endSession($, 'clear')
   await releaseFork()
   await flush()
   expect(renames()).toEqual([])
 
-  await fromPerson({ prompt: '別の話' })
+  await fromPerson('別の話')
   await endTurn()
   await step()
   expect(forks).toHaveLength(2)
@@ -330,10 +357,11 @@ test('a refused fork lets the next prompt ask again', async ($, on) => {
   const { forks, renames, fromPerson, turnEnds } = engine($, on, {
     fork: ['deny', { isAnswered: true, text: '売上集計の修正' }],
   })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds()
-  await fromPerson({ prompt: '続けて' })
+  await fromPerson('続けて')
   await turnEnds()
 
   expect(forks).toHaveLength(2)
@@ -345,11 +373,12 @@ test("a prompt sent while the turn's end asks is asked about if no name comes", 
     holdsForks: true,
     fork: { isAnswered: true, text: 'SKIP' },
   })
+  await start($)
 
-  await fromPerson({ prompt: 'こんにちは' })
+  await fromPerson('こんにちは')
   await endTurn()
   await step()
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await releaseFork()
   await endTurn()
   await step()
@@ -364,10 +393,11 @@ test("a failed name at the turn's end lets the next prompt ask again", async ($,
       { isAnswered: true, text: '売上集計の修正' },
     ],
   })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds()
-  await fromPerson({ prompt: '続けて' })
+  await fromPerson('続けて')
   await turnEnds()
 
   expect(forks).toHaveLength(2)
@@ -376,11 +406,12 @@ test("a failed name at the turn's end lets the next prompt ask again", async ($,
 
 test("a prompt sent while this mod's name waits does not ask for a name again", async ($, on) => {
   const { forks, renames, fromPerson, turnEnds, step, flush, endTurn } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
-  await fromPerson({ prompt: '続けて' })
+  await fromPerson('続けて')
   await turnEnds()
   await flush()
 
@@ -396,12 +427,13 @@ for (const text of [
 ]) {
   test(`the reply ${JSON.stringify(text)} leaves the session unnamed, and the next turn asks again`, async ($, on) => {
     const { forks, renames, fromPerson, turnEnds } = engine($, on, { fork: { isAnswered: true, text } })
+    await start($)
 
-    await fromPerson({ prompt: 'こんにちは' })
+    await fromPerson('こんにちは')
     await turnEnds()
     expect(renames()).toEqual([])
 
-    await fromPerson({ prompt: '売上集計を直して' })
+    await fromPerson('売上集計を直して')
     await turnEnds()
     expect(forks).toHaveLength(2)
   })
@@ -411,17 +443,58 @@ test('a reply with reasoning before the name uses the last line', async ($, on) 
   const { renames, fromPerson, turnEnds } = engine($, on, {
     fork: { isAnswered: true, text: '作業依頼なので名前を付ける。\n\nタスク改善' },
   })
+  await start($)
 
-  await fromPerson({ prompt: 'タスクを改善したい' })
+  await fromPerson('タスクを改善したい')
   await turnEnds()
 
   expect(renames()).toEqual(['/rename タスク改善'])
 })
 
+test('a failed /rename lets the next prompt ask again', async ($, on) => {
+  const { forks, renames, fromPerson, turnEnds } = engine($, on, { failsRenames: 1 })
+  await start($)
+
+  await fromPerson('売上集計を直して')
+  await turnEnds()
+  await fromPerson('続けて')
+  await turnEnds()
+
+  expect(forks).toHaveLength(2)
+  expect(renames()).toEqual(['/rename 売上集計の修正', '/rename 売上集計の修正'])
+})
+
+test('a failed /rename from /nametag leaves a named session named', async ($, on) => {
+  const { forks, fromPerson, turnEnds, flush } = engine($, on, { turns: 3, failsRenames: 1 })
+  await start($)
+
+  await nametag($)
+  await flush()
+  await fromPerson('続けて')
+  await turnEnds()
+
+  expect(forks).toHaveLength(1)
+})
+
+test("a name by hand while this mod's /rename waits is not given back across a resume", async ($, on) => {
+  const { renames, fromPerson, endTurn, step, flush, renameAs } = engine($, on)
+  await start($)
+
+  await fromPerson('売上集計を直して')
+  await endTurn()
+  await step()
+  await renameAs({ kind: 'composer' }, '手で付けた名前')
+  await endSession($, 'resume')
+  await flush()
+
+  expect(renames()).toEqual(['/rename 手で付けた名前', '/rename 売上集計の修正'])
+})
+
 test('a failed fork leaves the session unnamed', async ($, on) => {
   const { renames, fromPerson, turnEnds } = engine($, on, { fork: { isAnswered: false, reason: 'api-error' } })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds()
 
   expect(renames()).toEqual([])
@@ -429,6 +502,7 @@ test('a failed fork leaves the session unnamed', async ($, on) => {
 
 test('a prompt that is not from a person does not name the session', async ($, on) => {
   const { forks, turnEnds } = engine($, on)
+  await start($)
 
   await $.prompt.submit({ text: 'tick', origin: { kind: 'scheduled-trigger' } } as never)
   await turnEnds()
@@ -436,20 +510,11 @@ test('a prompt that is not from a person does not name the session', async ($, o
   expect(forks).toEqual([])
 })
 
-test('a person prompt dropped before the classic hook does not vouch for the next one', async ($, on) => {
-  const { forks, fromPerson, turnEnds } = engine($, on, { dropsPrompts: true })
+test('a prompt dropped on the way, by a settings hook among others, names nothing', async ($, on) => {
+  const { forks, fromPerson, turnEnds } = engine($, on, { drop: 'secret' })
 
-  await fromPerson({ prompt: '落ちたプロンプト' })
-  await $.classic.UserPromptSubmit({ prompt: 'notification' })
-  await turnEnds()
-
-  expect(forks).toEqual([])
-})
-
-test('a blocked prompt names nothing', async ($, on) => {
-  const { forks, fromPerson, turnEnds } = engine($, on, { block: 'secret' })
-
-  await fromPerson({ prompt: 'secret text' })
+  await start($)
+  await fromPerson('secret text')
   await turnEnds()
 
   expect(forks).toEqual([])
@@ -457,17 +522,18 @@ test('a blocked prompt names nothing', async ($, on) => {
 
 test('after /clear an automatic name is replaced once', async ($, on) => {
   const { forks, renames, fromPerson, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await turnEnds()
-  await $.classic.SessionStart({ source: 'clear', session_title: '売上集計の修正' })
+  await endSession($, 'clear')
 
-  await fromPerson({ prompt: '別の話', session_title: '売上集計の修正' })
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toHaveLength(2)
   expect(renames()).toHaveLength(2)
 
-  await fromPerson({ prompt: 'さらに別の話', session_title: '売上集計の修正' })
+  await fromPerson('さらに別の話')
   await turnEnds()
   expect(forks).toHaveLength(2)
 })
@@ -475,8 +541,8 @@ test('after /clear an automatic name is replaced once', async ($, on) => {
 test('after /clear a title this mod did not give, by hand or from before a reload, is replaced', async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
 
-  await $.classic.SessionStart({ source: 'clear', session_title: '手で付けた名前' })
-  await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
+  await endSession($, 'clear')
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toHaveLength(1)
 })
@@ -489,12 +555,12 @@ test('after /clear a greeting with nothing to name leaves the old title to the n
     ],
   })
 
-  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
-  await fromPerson({ prompt: 'こんにちは', session_title: '前の名前' })
+  await endSession($, 'clear')
+  await fromPerson('こんにちは')
   await turnEnds()
   expect(renames()).toEqual([])
 
-  await fromPerson({ prompt: '別の話をしたい', session_title: '前の名前' })
+  await fromPerson('別の話をしたい')
   await turnEnds()
   expect(forks).toHaveLength(2)
   expect(renames()).toEqual(['/rename 別の話の名前'])
@@ -503,24 +569,25 @@ test('after /clear a greeting with nothing to name leaves the old title to the n
 test('a name written by hand after /clear stays', async ($, on) => {
   const { forks, renameAs, fromPerson, turnEnds } = engine($, on)
 
-  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
+  await endSession($, 'clear')
   await renameAs({ kind: 'composer' }, '手で付けた名前')
-  await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toEqual([])
 })
 
 test("this mod's name that lands after /clear is replaced after the next turn", async ($, on) => {
   const { forks, renames, fromPerson, endTurn, step, flush, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
-  await $.classic.SessionStart({ source: 'clear' })
+  await endSession($, 'clear')
   await flush()
   expect(renames()).toEqual(['/rename 売上集計の修正'])
 
-  await fromPerson({ prompt: '別の話', session_title: '売上集計の修正' })
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toHaveLength(2)
   expect(renames()).toHaveLength(2)
@@ -533,17 +600,18 @@ test("this mod's name that lands after the first prompt past /clear is replaced 
       { isAnswered: true, text: '後の名前' },
     ],
   })
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
-  await $.classic.SessionStart({ source: 'clear' })
-  await fromPerson({ prompt: '別の話' })
+  await endSession($, 'clear')
+  await fromPerson('別の話')
   await flush()
   await turnEnds()
   expect(renames()).toEqual(['/rename 先の名前'])
 
-  await fromPerson({ prompt: '別の話の続き', session_title: '先の名前' })
+  await fromPerson('別の話の続き')
   await turnEnds()
   expect(renames()).toEqual(['/rename 先の名前', '/rename 後の名前'])
 })
@@ -551,46 +619,40 @@ test("this mod's name that lands after the first prompt past /clear is replaced 
 test('a name given by hand after /clear stays, even the old one', async ($, on) => {
   const { forks, renameAs, fromPerson, turnEnds } = engine($, on)
 
-  await $.classic.SessionStart({ source: 'clear', session_title: '前の名前' })
+  await endSession($, 'clear')
   await renameAs({ kind: 'composer' }, '前の名前')
-  await fromPerson({ prompt: '別の話', session_title: '前の名前' })
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toEqual([])
 })
 
 test('a hand-written name this mod gives back after /clear is replaced', async ($, on) => {
   const { forks, renames, renameAs, fromPerson, endTurn, step, flush, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
   await renameAs({ kind: 'composer' }, '手で付けた名前')
-  await $.classic.SessionStart({ source: 'clear' })
+  await endSession($, 'clear')
   await flush()
   expect(renames().at(-1)).toBe('/rename 手で付けた名前')
 
-  await fromPerson({ prompt: '別の話', session_title: '手で付けた名前' })
+  await fromPerson('別の話')
   await turnEnds()
   expect(forks).toHaveLength(2)
 })
 
 test('/clear drops the mark a prompt left before it', async ($, on) => {
   const { forks, fromPerson, endTurn, turnEnds } = engine($, on)
+  await start($)
 
-  await fromPerson({ prompt: '売上集計を直して' })
+  await fromPerson('売上集計を直して')
   await endTurn({ reason: 'aborted' })
-  await $.classic.SessionStart({ source: 'clear' })
+  await endSession($, 'clear')
   await turnEnds()
   expect(forks).toEqual([])
 })
-
-const nametag = ($: TestEngine) =>
-  $.command.run({
-    command: 'nametag',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 140 },
-  })
 
 test('/nametag is registered in every session, and runs mid-turn', async ($, on) => {
   const { registered } = engine($, on)
@@ -615,7 +677,8 @@ test('/nametag during the first turn finds nothing yet, and the turn end names t
       { isAnswered: true, text: '売上集計の修正' },
     ],
   })
-  await fromPerson({ prompt: '売上集計を直して' })
+  await start($)
+  await fromPerson('売上集計を直して')
   expect((await nametag($)).text).toBe('nametag: nothing to name yet.')
   await turnEnds()
   expect(renames()).toEqual(['/rename 売上集計の修正'])
@@ -636,7 +699,7 @@ test('/clear while /nametag asks drops the name from before it', async ($, on) =
   const { renames, releaseFork, flush } = engine($, on, { holdsForks: true })
   const asked = nametag($)
   await settle()
-  await $.classic.SessionStart({ source: 'clear' })
+  await endSession($, 'clear')
   await releaseFork()
   await asked
   await flush()
@@ -645,7 +708,8 @@ test('/clear while /nametag asks drops the name from before it', async ($, on) =
 
 test('/nametag while an unnamed turn runs leaves its end nothing to do', async ($, on) => {
   const { forks, fromPerson, turnEnds } = engine($, on)
-  await fromPerson({ prompt: '売上集計を直して' })
+  await start($)
+  await fromPerson('売上集計を直して')
   await nametag($)
   await turnEnds()
   expect(forks).toHaveLength(1)
@@ -658,7 +722,8 @@ test('of two names this mod gives, the later one is given last, over a name by h
       { isAnswered: true, text: '後の名前' },
     ],
   })
-  await fromPerson({ prompt: '売上集計を直して' })
+  await start($)
+  await fromPerson('売上集計を直して')
   await endTurn()
   await step()
   await renameAs({ kind: 'composer' }, '手書きの名前')

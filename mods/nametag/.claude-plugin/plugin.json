@@ -1,6 +1,6 @@
 {
   "name": "nametag",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Gives each new session a random prompt bar color and an automatic name, renames it from the conversation with /nametag, and leaves names written by hand alone until /clear.",
   "author": {
     "name": "michisato",
