@@ -36,19 +36,22 @@ const cleanName = (text: string): string | undefined => {
   return name
 }
 
-type Landed = () => string | undefined
+// Hears whether the /rename went through.
+type Landed = (isRenamed: boolean) => string | undefined
 // Hears the name that came back, `undefined` when none did, and answers how to land it, or nothing when it no longer
 // stands.
 type Claim = (name: string | undefined) => Landed | undefined
 
 // The command waits for an idle session. `landed` hears when it is done and may hand back a name to give after it.
 const rename = async ($: EngineInterface, name: string, landed: Landed): Promise<void> => {
-  try {
-    await $.command.run({ command: 'rename', args: name })
-  } catch (error: unknown) {
-    $.ui.log(`nametag: ${String(error)}`)
-  }
-  const back = landed()
+  const isRenamed = await $.command.run({ command: 'rename', args: name }).then(
+    () => true,
+    (error: unknown) => {
+      $.ui.log(`nametag: ${String(error)}`)
+      return false
+    },
+  )
+  const back = landed(isRenamed)
   if (back) {
     applyName($, back)
   }
@@ -77,13 +80,6 @@ const askName = async ($: EngineInterface, prompt: string): Promise<{ name: stri
     return { text: NO_NAME }
   }
   return { name }
-}
-
-// A resumed session keeps whatever color it had.
-const rollColorIfNew = async ($: EngineInterface, isInteractive: boolean): Promise<void> => {
-  if (isInteractive && (await $.session.turns()) === 0) {
-    rollColor($)
-  }
 }
 
 // Not only for an interactive session: the desktop app hosts its sessions as headless ones.
@@ -131,26 +127,14 @@ const onAnsweredTurn = (on: On, prompt: string, ask: () => Claim | undefined): v
   })
 }
 
-// Hears each prompt a person sent that goes on to the model, with the session's title as it was sent. The classic hook
-// runs inside prompt.submit's next(e), so the flag holds for exactly one prompt.
-const onPersonPrompt = (on: On, heard: (title: string | undefined) => void): void => {
-  let isFromPerson = false
-
+// Hears each prompt a person sent that went on to the model. One dropped on the way, by a settings hook's block among
+// others, never reached it.
+const onPersonPrompt = (on: On, heard: () => void): void => {
   on('prompt.submit', async (_$, e, next) => {
-    isFromPerson = PERSON_ORIGINS.includes(e.origin.kind)
-    try {
-      return await next(e)
-    } finally {
-      isFromPerson = false
-    }
-  })
-
-  on('classic.UserPromptSubmit', async (_$, e, next) => {
-    // Read before next(e), because another prompt can arrive while the hooks beneath run.
-    const wasFromPerson = isFromPerson
+    const isFromPerson = PERSON_ORIGINS.includes(e.origin.kind)
     const result = await next(e)
-    if (wasFromPerson && !result.block && !result.preventContinuation) {
-      heard(e.session_title)
+    if (isFromPerson && result.drop === undefined) {
+      heard()
     }
     return result
   })
@@ -159,90 +143,91 @@ const onPersonPrompt = (on: On, heard: (title: string | undefined) => void): voi
 interface Waiting {
   name?: string
   byHand?: string
-  // While it asks: whether a prompt sent meanwhile would have marked the session, to mark it if no name comes.
-  wouldMark?: boolean
 }
 
 interface Naming {
+  restarted: (isNameless: boolean) => void
   explicit: () => Claim
-  heard: (title: string | undefined) => void
+  heard: () => void
   renamed: (name: string) => void
-  cleared: (title: string | undefined) => void
   ask: () => Claim | undefined
 }
 
-// A person's prompt to an unnamed session marks it, and the end of a turn that answered names it. A failed name is
-// asked for again after the next turn, because the next prompt marks the still unnamed session again.
+// No hook a person's mod gets on a team plan tells it the session's title, so this mod keeps what it saw. A session is
+// nameless when it started fresh or /clear left the old title in place, until a name comes from this mod or /rename.
+// A title out of its sight counts as a name, so it never writes over one: a resumed session's, or the one a session
+// with turns had when this mod was reloaded into it. Before the first prompt it can't tell: a title from `claude -n`
+// or a settings hook, or one given by hand before a reload, is replaced like no name.
+// A person's prompt to a nameless session marks it, and the end of a turn that answered names it. A failed name, or a
+// failed /rename of a nameless session, is asked for again after the next turn, because the next prompt marks the
+// still nameless session again.
 // `waiting` is what this mod is about to name the session: `{}` while the model is asked, `{ name }` until its
-// /rename is done, which runs only once the session is idle. Meanwhile prompts don't ask again. A name from the person
-// or another plugin while it asks drops this mod's, and so does /clear; one while its /rename waits is given back
-// after it.
-// /clear keeps the old title, and no hook can empty it. So that title counts as no name, hand-written or not, until a
-// name replaces it: `staleName`. It is the title as /clear left it, which needs no memory a reloaded mod may have lost.
+// /rename is done, which runs only once the session is idle. Meanwhile turns don't ask again, and a prompt marks the
+// session only while it asks. A name from the person or another plugin while it asks drops this mod's, and so do
+// /clear and a resume. One while its /rename waits is given back after it, also across /clear, as the /rename is sent
+// already; not across a resume, as the name by hand was the other session's.
 const naming = (): Naming => {
-  let isUnnamed = false
+  let isNameless = false
+  let isMarked = false
   let waiting: Waiting | undefined
-  let staleName: string | undefined
 
   const decide = (name: string): Landed => {
     const mine: Waiting = { name }
-    staleName = undefined
-    isUnnamed = false
+    const wasNameless = isNameless
+    isNameless = false
+    isMarked = false
     waiting = mine
-    return () => {
+    return isRenamed => {
       if (waiting === mine) {
         waiting = undefined
+        isNameless ||= wasNameless && !(isRenamed || mine.byHand)
         return mine.byHand
       }
     }
   }
 
-  // What comes back counts only if no other name arrived since: `renamed` and `cleared` take `waiting` away.
+  // What comes back counts only if no other name arrived since: `renamed` and `restarted` take `waiting` away.
   const begin = (keepsMark: boolean): Claim => {
     const asking: Waiting = {}
-    isUnnamed = false
+    isMarked = false
     waiting = asking
     return name => {
       if (waiting !== asking) {
         return
       }
       waiting = undefined
-      isUnnamed = name === undefined && (keepsMark || asking.wouldMark === true)
       if (name !== undefined) {
         return decide(name)
       }
+      isMarked = isNameless && (keepsMark || isMarked)
     }
   }
 
   return {
-    explicit: (): Claim => begin(isUnnamed),
-    heard: (title: string | undefined): void => {
-      const wouldMark = !title || title === staleName
-      if (waiting) {
-        waiting.wouldMark = waiting.name === undefined && wouldMark
-        return
+    restarted: (isNamelessNow: boolean): void => {
+      isNameless = isNamelessNow
+      isMarked = false
+      if (waiting?.name === undefined || !isNamelessNow) {
+        waiting = undefined
       }
-      isUnnamed = wouldMark
+    },
+    explicit: (): Claim => begin(isMarked),
+    heard: (): void => {
+      if (waiting?.name === undefined) {
+        isMarked = isNameless
+      }
     },
     renamed: (name: string): void => {
-      isUnnamed = false
-      staleName = undefined
+      isNameless = false
+      isMarked = false
       if (waiting?.name === undefined) {
         waiting = undefined
       } else {
         waiting.byHand = name
       }
     },
-    // A /rename of this mod yet to land leaves its name, or the hand-written one it gives back.
-    cleared: (title: string | undefined): void => {
-      staleName = waiting?.byHand ?? waiting?.name ?? title
-      isUnnamed = false
-      if (waiting?.name === undefined) {
-        waiting = undefined
-      }
-    },
     ask: (): Claim | undefined => {
-      if (isUnnamed) {
+      if (isMarked && !waiting) {
         return begin(false)
       }
     },
@@ -253,10 +238,15 @@ export const register: Register = (on, options) => {
   const prompt = promptFor(String(options.naming_rules ?? '').trim())
   const state = naming()
 
+  // A resumed session keeps whatever color it had.
   on('session.start', async ($, e, next) => {
     await registerCommand($)
     const result = await next(e)
-    await rollColorIfNew($, e.isInteractive)
+    const isFresh = (await $.session.turns()) === 0
+    state.restarted(isFresh)
+    if (isFresh && e.isInteractive) {
+      rollColor($)
+    }
     return result
   })
 
@@ -268,13 +258,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('classic.SessionStart', async ($, e, next) => {
-    const result = await next(e)
-    if (e.source === 'clear') {
-      state.cleared(e.session_title)
-      rollColor($)
+  // /clear goes on in a new session, with no session.start for it. It keeps the old title, and no hook can empty it,
+  // so that counts as no name, hand-written or not. A resume in the session puts another in its place, its title out
+  // of sight. The color waits for a timer, as a command may not run from inside another.
+  on('session.end', ($, e, next) => {
+    if (e.reason === 'clear') {
+      state.restarted(true)
+      $.clock.after(0, () => rollColor($))
+    } else if (e.reason === 'resume') {
+      state.restarted(false)
     }
-    return result
+    return next(e)
   })
 
   onPersonPrompt(on, state.heard)
